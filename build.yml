@@ -1,0 +1,53 @@
+name: Build WinNotch
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # build (а не publish): в выходной папке гарантированно лежат все native-библиотеки SQLite
+      - name: Build
+        run: dotnet build WinNotch.csproj -c Release -o out
+
+      - name: Clean and verify output
+        shell: pwsh
+        run: |
+          Remove-Item out\*.xml -ErrorAction SilentlyContinue
+          Remove-Item out\*.pdb -ErrorAction SilentlyContinue
+          Remove-Item out\x86 -Recurse -ErrorAction SilentlyContinue
+          if (!(Test-Path out\WinNotch.exe)) { throw "WinNotch.exe not found" }
+          $interop = Get-ChildItem out -Recurse -Filter SQLite.Interop.dll
+          if (-not $interop) { throw "SQLite.Interop.dll not found in build output" }
+          if (!(Test-Path out\System.Data.SQLite.dll)) { throw "System.Data.SQLite.dll not found" }
+          Get-ChildItem out -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize
+          $size = (Get-ChildItem out -Recurse -File | Measure-Object Length -Sum).Sum
+          Write-Host ("Total size: {0:N1} MB" -f ($size / 1MB))
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path out\* -DestinationPath WinNotch.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinNotch
+          path: out
+
+      - name: Release (only on tags like v1.1)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: WinNotch.zip
